@@ -3,10 +3,11 @@ package redis
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/vmihailenco/msgpack/v5"
 
 	goredis "github.com/go-redis/redis"
 	"github.com/magiconair/properties"
@@ -49,7 +50,7 @@ func (r *redis) Read(ctx context.Context, table string, key string, fields []str
 		return nil, err
 	}
 
-	err = json.Unmarshal([]byte(res), &data)
+	err = msgpack.Unmarshal([]byte(res), &data)
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +71,7 @@ func (r *redis) Update(ctx context.Context, table string, key string, values map
 	}
 
 	curVal := map[string][]byte{}
-	err = json.Unmarshal([]byte(d), &curVal)
+	err = msgpack.Unmarshal([]byte(d), &curVal)
 	if err != nil {
 		return err
 	}
@@ -78,7 +79,7 @@ func (r *redis) Update(ctx context.Context, table string, key string, values map
 		curVal[k] = v
 	}
 	var data []byte
-	data, err = json.Marshal(curVal)
+	data, err = msgpack.Marshal(curVal)
 	if err != nil {
 		return err
 	}
@@ -87,7 +88,7 @@ func (r *redis) Update(ctx context.Context, table string, key string, values map
 }
 
 func (r *redis) Insert(ctx context.Context, table string, key string, values map[string][]byte) error {
-	data, err := json.Marshal(values)
+	data, err := msgpack.Marshal(values)
 	if err != nil {
 		return err
 	}
