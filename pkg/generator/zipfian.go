@@ -34,6 +34,8 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"runtime"
+	"sync"
 	"time"
 
 	"github.com/pingcap/go-ycsb/pkg/util"
@@ -42,6 +44,10 @@ import (
 const (
 	// ZipfianConstant is the default constant for the zipfian.
 	ZipfianConstant = float64(0.99)
+)
+
+var (
+	numCPU = runtime.NumCPU()
 )
 
 // Zipfian generates the zipfian distribution. It produces a sequence of items, such that some items are more popular than
@@ -74,6 +80,7 @@ type Zipfian struct {
 
 	alpha      float64
 	zetan      float64
+	zetaFirst  float64
 	theta      float64
 	eta        float64
 	zeta2Theta float64
@@ -107,8 +114,11 @@ func NewZipfian(min int64, max int64, zipfianConstant float64, zetan float64) *Z
 
 	z.zeta2Theta = z.zeta(0, 2, theta, 0)
 
-	z.alpha = 1.0 / (1.0 - theta)
+	// round the alpha divisor to 10 digits to avoid trailing 9s
+	// which are bad for the performance of the following math.Pow() calls
+	z.alpha = 1.0 / (math.Round((1.0-theta)*math.Pow10(10)) / math.Pow10(10))
 	z.zetan = zetan
+	z.zetaFirst = 1.0 + math.Pow(0.5, z.theta)
 	z.countForZeta = items
 	z.eta = (1 - math.Pow(2.0/float64(items), 1-theta)) / (1 - z.zeta2Theta/z.zetan)
 
@@ -123,10 +133,37 @@ func (z *Zipfian) zeta(st int64, n int64, thetaVal float64, initialSum float64) 
 }
 
 func zetaStatic(st int64, n int64, theta float64, initialSum float64) float64 {
-	sum := initialSum
+	var waiter sync.WaitGroup
+	harmonicNumber := func(start, end int64, result *float64) {
+		var sum float64
+		for i := start; i < end; i++ {
+			sum += 1 / math.Pow(float64(i+1), theta)
+		}
+		*result = sum
+		waiter.Done()
+	}
 
-	for i := st; i < n; i++ {
-		sum += 1 / math.Pow(float64(i+1), theta)
+	var results []float64
+	partition := (n - st) / int64(numCPU)
+	if partition > 0 {
+		waiter.Add(numCPU)
+		results = make([]float64, numCPU)
+		for i := 0; i < numCPU; i++ {
+			go harmonicNumber(st+int64(i)*partition, st+int64(i+1)*partition, &results[i])
+		}
+	}
+
+	var remainder float64
+	tail := st + (int64(numCPU) * partition)
+	if tail < n {
+		waiter.Add(1)
+		go harmonicNumber(tail, n, &remainder)
+	}
+	waiter.Wait()
+
+	sum := initialSum + remainder
+	for i := 0; i < len(results); i++ {
+		sum += results[i]
 	}
 
 	return sum
@@ -155,7 +192,7 @@ func (z *Zipfian) next(r *rand.Rand, itemCount int64) int64 {
 		return z.base
 	}
 
-	if uz < 1.0+math.Pow(0.5, z.theta) {
+	if uz < z.zetaFirst {
 		return z.base + 1
 	}
 
